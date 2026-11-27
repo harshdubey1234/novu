@@ -1,6 +1,13 @@
-import { INTEGRATION_OVERRIDES_OUTPUT_KEY, PushProviderIdEnum, TriggerOverrides } from '@novu/shared';
+import {
+  ChannelTypeEnum,
+  EmailProviderIdEnum,
+  INTEGRATION_OVERRIDES_OUTPUT_KEY,
+  PushProviderIdEnum,
+  SmsProviderIdEnum,
+  TriggerOverrides,
+} from '@novu/shared';
 import { expect } from 'chai';
-import { combineProviderOverrides } from './send-message.base';
+import { combineProviderOverrides, mergeTriggerProviderOverrides } from './send-message.base';
 
 const PROVIDER_ID = 'slack';
 const FCM_PROVIDER_ID = PushProviderIdEnum.FCM;
@@ -489,5 +496,146 @@ describe('combineProviderOverrides', () => {
 
       expect(combined).to.deep.equal({ tokens: ['t1'] });
     });
+  });
+});
+
+describe('mergeTriggerProviderOverrides', () => {
+  const GUPSHUP = SmsProviderIdEnum.Gupshup;
+  const SENDGRID = EmailProviderIdEnum.SendGrid;
+
+  it('keeps workflow-level customData keys when a step adds its own', () => {
+    const merged = mergeTriggerProviderOverrides(
+      triggerOverrides({
+        providers: { [GUPSHUP]: { customData: { principalEntityId: 'entity-123' } } },
+        steps: { sms_step: { providers: { [GUPSHUP]: { customData: { dltTemplateId: 'template-456' } } } } },
+      }),
+      ChannelTypeEnum.SMS,
+      GUPSHUP,
+      'sms_step'
+    );
+
+    expect(merged).to.deep.equal({
+      customData: { principalEntityId: 'entity-123', dltTemplateId: 'template-456' },
+    });
+  });
+
+  it('lets the step value win when both levels set the same nested key', () => {
+    const merged = mergeTriggerProviderOverrides(
+      triggerOverrides({
+        providers: { [GUPSHUP]: { customData: { principalEntityId: 'entity-123', dltTemplateId: 'workflow' } } },
+        steps: { sms_step: { providers: { [GUPSHUP]: { customData: { dltTemplateId: 'step' } } } } },
+      }),
+      ChannelTypeEnum.SMS,
+      GUPSHUP,
+      'sms_step'
+    );
+
+    expect(merged.customData).to.deep.equal({ principalEntityId: 'entity-123', dltTemplateId: 'step' });
+  });
+
+  it('applies channel < flat provider key < workflow-wide < step-scoped precedence', () => {
+    const merged = mergeTriggerProviderOverrides(
+      {
+        sms: { from: 'channel', to: 'channel', content: 'channel', customData: { a: 'channel' } },
+        [GUPSHUP]: { from: 'flat', to: 'flat', customData: { b: 'flat' } },
+        providers: { [GUPSHUP]: { from: 'workflow', customData: { c: 'workflow' } } },
+        steps: { sms_step: { providers: { [GUPSHUP]: { from: 'step' } } } },
+      } as unknown as TriggerOverrides,
+      ChannelTypeEnum.SMS,
+      GUPSHUP,
+      'sms_step'
+    );
+
+    expect(merged).to.deep.equal({
+      from: 'step',
+      to: 'flat',
+      content: 'channel',
+      customData: { a: 'channel', b: 'flat', c: 'workflow' },
+    });
+  });
+
+  it('replaces arrays whole instead of merging them by index', () => {
+    const merged = mergeTriggerProviderOverrides(
+      triggerOverrides({
+        providers: { [SENDGRID]: { cc: ['a@example.com', 'b@example.com'] } },
+        steps: { email_step: { providers: { [SENDGRID]: { cc: ['c@example.com'] } } } },
+      }),
+      ChannelTypeEnum.EMAIL,
+      SENDGRID,
+      'email_step'
+    );
+
+    expect(merged.cc).to.deep.equal(['c@example.com']);
+  });
+
+  it('lets an empty override array clear a lower-level list', () => {
+    const merged = mergeTriggerProviderOverrides(
+      triggerOverrides({
+        providers: { [SENDGRID]: { to: ['a@example.com'] } },
+        steps: { email_step: { providers: { [SENDGRID]: { to: [] } } } },
+      }),
+      ChannelTypeEnum.EMAIL,
+      SENDGRID,
+      'email_step'
+    );
+
+    expect(merged.to).to.deep.equal([]);
+  });
+
+  it('treats an undefined override value as absent and a null one as an explicit clear', () => {
+    const merged = mergeTriggerProviderOverrides(
+      triggerOverrides({
+        providers: { [GUPSHUP]: { from: 'workflow', customData: { principalEntityId: 'entity-123' } } },
+        steps: { sms_step: { providers: { [GUPSHUP]: { from: undefined, customData: null } } } },
+      }),
+      ChannelTypeEnum.SMS,
+      GUPSHUP,
+      'sms_step'
+    );
+
+    expect(merged).to.deep.equal({ from: 'workflow', customData: null });
+  });
+
+  it('ignores step-scoped overrides without a step id or for another step', () => {
+    const overrides = triggerOverrides({
+      providers: { [GUPSHUP]: { customData: { principalEntityId: 'entity-123' } } },
+      steps: { other_step: { providers: { [GUPSHUP]: { customData: { dltTemplateId: 'other' } } } } },
+    });
+
+    expect(mergeTriggerProviderOverrides(overrides, ChannelTypeEnum.SMS, GUPSHUP, undefined)).to.deep.equal({
+      customData: { principalEntityId: 'entity-123' },
+    });
+    expect(mergeTriggerProviderOverrides(overrides, ChannelTypeEnum.SMS, GUPSHUP, 'sms_step')).to.deep.equal({
+      customData: { principalEntityId: 'entity-123' },
+    });
+  });
+
+  it('leaves the trigger overrides untouched', () => {
+    const workflowCustomData = { principalEntityId: 'entity-123' };
+
+    const merged = mergeTriggerProviderOverrides(
+      triggerOverrides({
+        providers: { [GUPSHUP]: { customData: workflowCustomData } },
+        steps: { sms_step: { providers: { [GUPSHUP]: { customData: { dltTemplateId: 'template-456' } } } } },
+      }),
+      ChannelTypeEnum.SMS,
+      GUPSHUP,
+      'sms_step'
+    );
+
+    expect(workflowCustomData).to.deep.equal({ principalEntityId: 'entity-123' });
+    expect(merged.customData).to.not.equal(workflowCustomData);
+  });
+
+  it('returns an empty object when nothing targets the provider', () => {
+    expect(mergeTriggerProviderOverrides(undefined, ChannelTypeEnum.SMS, GUPSHUP, 'sms_step')).to.deep.equal({});
+    expect(
+      mergeTriggerProviderOverrides(
+        triggerOverrides({ providers: { [SENDGRID]: { from: 'x' } } }),
+        ChannelTypeEnum.SMS,
+        undefined,
+        'sms_step'
+      )
+    ).to.deep.equal({});
   });
 });

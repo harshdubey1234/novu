@@ -207,6 +207,11 @@ function resolveOverrideLayers(
  *
  * Use it for fields the worker reads itself (e.g. SMS `to`/`from`, email `cc`) — provider request
  * bodies get the nested shapes through `combineProviderOverrides` instead.
+ *
+ * Objects are deep-merged, so a step that adds one `customData` key (e.g. Gupshup's `dltTemplateId`)
+ * keeps the keys a lower layer set (e.g. its `principalEntityId`). Arrays and scalars from a higher
+ * layer replace the lower value whole, `null` clears it, and `undefined` counts as not set, the same
+ * rules `combineProviderOverrides` applies.
  */
 export function mergeTriggerProviderOverrides(
   overrides: TriggerOverrides | undefined,
@@ -216,12 +221,14 @@ export function mergeTriggerProviderOverrides(
 ): Record<string, unknown> {
   const legacyOverrides = overrides as Record<string, Record<string, unknown> | undefined> | undefined;
 
-  return {
-    ...(channel ? legacyOverrides?.[channel] || {} : {}),
-    ...(providerId ? legacyOverrides?.[providerId] || {} : {}),
-    ...(providerId ? overrides?.providers?.[providerId] || {} : {}),
-    ...(providerId && stepId ? overrides?.steps?.[stepId]?.providers?.[providerId] || {} : {}),
-  };
+  return mergeWith(
+    {},
+    channel ? legacyOverrides?.[channel] : undefined,
+    providerId ? legacyOverrides?.[providerId] : undefined,
+    providerId ? overrides?.providers?.[providerId] : undefined,
+    providerId && stepId ? overrides?.steps?.[stepId]?.providers?.[providerId] : undefined,
+    replaceArrays
+  );
 }
 
 export abstract class SendMessageBase extends SendMessageType {
